@@ -1,0 +1,173 @@
+# ACME Talent ETL: three layer jobs (bronze -> silver -> gold), then publish site/ to Cloudflare Pages.
+#
+# Each job runs on a fresh runner with its own Postgres/MinIO (docker compose). The lake is handed
+# from job to job as an artifact: a job imports the previous job's lake export, runs its layer and
+# exports the whole lake again ("lake-after-<layer>", kept 7 days). Running one layer alone
+# (workflow_dispatch, layer=silver/gold) restores the newest lake-after-* artifact from an earlier run.
+name: pipeline
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      layer:
+        description: Layer(s) to run
+        type: choice
+        options: [all, bronze, silver, gold]
+        default: all
+
+permissions:
+  contents: read
+  actions: read # download lake state saved by earlier runs
+
+concurrency:
+  group: pipeline-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  EXECUTION_ENV: github-actions
+  LAKE_STATE_DIR: ./lake-state
+  STATE_RETENTION_DAYS: 7
+
+jobs:
+  bronze:
+    if: github.event_name != 'workflow_dispatch' || inputs.layer == 'all' || inputs.layer == 'bronze'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Let containers write as the runner user
+        run: |
+          { echo "ETL_UID=$(id -u)"; echo "ETL_GID=$(id -g)"; echo "SITE_UID=$(id -u)"; echo "SITE_GID=$(id -g)"; } >> "$GITHUB_ENV"
+      - name: Bronze layer (generates the synthetic data, then extract + bronze)
+        run: EXPORT_STATE=1 SKIP_SITE=1 scripts/run_layer.sh bronze
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lake-after-bronze
+          path: lake-state
+          retention-days: ${{ env.STATE_RETENTION_DAYS }}
+          if-no-files-found: error
+
+  silver:
+    needs: bronze
+    if: >-
+      !cancelled() && (needs.bronze.result == 'success' || needs.bronze.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.layer == 'all' || inputs.layer == 'silver')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Let containers write as the runner user
+        run: |
+          { echo "ETL_UID=$(id -u)"; echo "ETL_GID=$(id -g)"; echo "SITE_UID=$(id -u)"; echo "SITE_GID=$(id -g)"; } >> "$GITHUB_ENV"
+      - name: Locate input lake state
+        id: state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/ci_find_state.sh "${{ needs.bronze.result }}" lake-after-bronze
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.state.outputs.name }}
+          path: lake-state
+          run-id: ${{ steps.state.outputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: Silver layer
+        run: IMPORT_STATE=1 EXPORT_STATE=1 SKIP_SITE=1 scripts/run_layer.sh silver
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lake-after-silver
+          path: lake-state
+          retention-days: ${{ env.STATE_RETENTION_DAYS }}
+          if-no-files-found: error
+
+  gold:
+    needs: silver
+    outputs:
+      deployable: ${{ steps.gate.outputs.deployable }}
+    if: >-
+      !cancelled() && (needs.silver.result == 'success' || needs.silver.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.layer == 'all' || inputs.layer == 'gold')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Let containers write as the runner user
+        run: |
+          { echo "ETL_UID=$(id -u)"; echo "ETL_GID=$(id -g)"; echo "SITE_UID=$(id -u)"; echo "SITE_GID=$(id -g)"; } >> "$GITHUB_ENV"
+      - name: Locate input lake state
+        id: state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/ci_find_state.sh "${{ needs.silver.result }}" lake-after-silver
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.state.outputs.name }}
+          path: lake-state
+          run-id: ${{ steps.state.outputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: Gold layer + site
+        run: IMPORT_STATE=1 EXPORT_STATE=1 scripts/run_layer.sh gold
+      - name: Deploy gate (SUCCEEDED and 9/9)
+        id: gate
+        if: always()
+        run: python3 scripts/ci_gate.py site/lineage.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lake-after-gold
+          path: lake-state
+          retention-days: ${{ env.STATE_RETENTION_DAYS }}
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: site
+          path: site
+          retention-days: ${{ env.STATE_RETENTION_DAYS }}
+          if-no-files-found: ignore
+
+  deploy:
+    # Opt-in: repository variable DEPLOY_PAGES=true, secrets CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID.
+    # Runs only when the gold job's gate says the pipeline SUCCEEDED with 9/9 checks.
+    needs: gold
+    if: >-
+      needs.gold.result == 'success' && needs.gold.outputs.deployable == 'true' &&
+      vars.DEPLOY_PAGES == 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: cloudflare-pages
+      url: ${{ steps.deploy.outputs.url }}
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PAGES_PROJECT: acme-talent-dashboard
+      WRANGLER: wrangler@4
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: site
+          path: site
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check Cloudflare secrets
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::Set the CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID repository secrets (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+      - name: Create the Pages project if needed
+        run: |
+          if npx --yes "$WRANGLER" pages project list | grep -qE "(^|[^a-z0-9-])${PAGES_PROJECT}([^a-z0-9-]|$)"; then
+            echo "project $PAGES_PROJECT exists"
+          else
+            npx --yes "$WRANGLER" pages project create "$PAGES_PROJECT" --production-branch=main
+          fi
+      - name: Deploy site/ to Cloudflare Pages
+        id: deploy
+        run: |
+          npx --yes "$WRANGLER" pages deploy site --project-name="$PAGES_PROJECT" --branch=main \
+            --commit-hash="$GITHUB_SHA" --commit-message="pipeline run $GITHUB_RUN_ID" | tee deploy.log
+          url=$(grep -oE 'https://[a-z0-9.-]+\.pages\.dev' deploy.log | tail -1 || true)
+          echo "url=${url:-https://$PAGES_PROJECT.pages.dev}" >> "$GITHUB_OUTPUT"

@@ -1,0 +1,7 @@
+# Runtime (shipped in the etl image)
+pandas==3.0.6
+numpy==2.5.4
+pyarrow==26.0.0
+pydantic==2.14.1
+boto3==1.43.114
+psycopg2-binary==2.9.13

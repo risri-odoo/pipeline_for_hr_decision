@@ -1,0 +1,23 @@
+# secrets / local config
+.env
+CLAUDE.md
+
+# data: generated on demand (scripts/generate_data.py), never committed
+data/generated/
+sample_data/
+
+# build output
+site/
+.lake-state/
+lake-state/
+.dist/
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.ipynb_checkpoints/

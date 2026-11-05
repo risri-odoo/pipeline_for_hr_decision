@@ -1,0 +1,12 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["integration: needs the docker-compose Postgres + MinIO (scripts/run_tests.sh)"]
+addopts = "-ra"
+
+[tool.coverage.run]
+source = ["job", "findings", "build_dashboard", "ci_gate", "generate_data"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
