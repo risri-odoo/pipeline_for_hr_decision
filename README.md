@@ -91,7 +91,7 @@ How to tell what state the pipeline is in:
 
 ### In GitHub Actions
 
-`.github/workflows/pipeline.yml` runs `bronze -> silver -> gold` as three jobs on every push to `main`. To run one layer alone: **Actions > pipeline > Run workflow** and pick `layer`. Jobs hand the lake to each other as artifacts (`lake-after-<layer>`, kept 7 days); a single-layer run starts from the newest saved state. The dashboard is published to **Cloudflare Pages** (project `acme-talent-dashboard`) by the `deploy` job, only when the pipeline SUCCEEDED with 9/9 checks. It is opt-in: repository variable `DEPLOY_PAGES=true` plus the secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`. See [docs/notes.md](docs/notes.md#ci-how-the-lake-moves-between-jobs) for why the state moves this way.
+`.github/workflows/pipeline.yml` runs `bronze -> silver -> gold` as three jobs on every push to `main`. To run one layer alone: **Actions > pipeline > Run workflow** and pick `layer`. Jobs hand the lake to each other as artifacts (`lake-after-<layer>`, kept 7 days); a single-layer run starts from the newest saved state. The dashboard is published to **GitHub Pages** by the `deploy` job, only from `main`, only when all three layer jobs succeeded in the same run, and only when the pipeline ended SUCCEEDED with 9/9 checks. One-time setup: **Settings > Pages > Source = GitHub Actions**. See [docs/notes.md](docs/notes.md#ci-how-the-lake-moves-between-jobs) for why the state moves this way.
 
 ## Tests
 

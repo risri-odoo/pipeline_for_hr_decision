@@ -49,12 +49,12 @@ Each job imports the previous job's export, runs its layer and exports the whole
 
 Measured locally (Docker Desktop on Windows): export about 20 s, import about 60 s for 1,640 objects. Windows file sharing is the slow part; Linux runners should be faster.
 
-### Hosting: Cloudflare Pages
-- **Why Cloudflare Pages:** free, works for private and public repos, and deploys from CI with `wrangler`.
-- **Gate:** `scripts/ci_gate.py` reads `site/lineage.json` in the gold job and sets `deployable=true` only for status `SUCCEEDED` with exactly 9/9 checks (so a STALE or INCOMPLETE pipeline never deploys). The `deploy` job also needs `DEPLOY_PAGES=true`, the `main` branch and both secrets, and fails with a clear message if a secret is missing.
-- **Deploy:** `npx wrangler@4 pages deploy site --project-name=acme-talent-dashboard --branch=main`; it creates the project on first run. Secrets reach wrangler only as env vars (`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`); nothing is hard-coded.
-- **The published site is public:** anyone with the `*.pages.dev` URL can open it. It holds aggregates only, plus `insights.html`, whose lookup example shows one employee's id, department and ratings (no names or emails). To restrict it, put the project behind Cloudflare Access (Zero Trust, free for up to 50 users).
-- **Token scope:** create a custom API token with only *Account > Cloudflare Pages > Edit* for this account.
+### Hosting: GitHub Pages
+- **Why GitHub Pages:** the repo is public, so Pages is free, and the official actions need no secrets or third-party account (the workflow's `GITHUB_TOKEN` deploys with `pages: write` + `id-token: write`).
+- **One-time setup:** Settings > Pages > Build and deployment > Source = **GitHub Actions**. Until then the `deploy` job fails at its first step.
+- **Gate:** `scripts/ci_gate.py` reads `site/lineage.json` in the gold job and sets `deployable=true` only for status `SUCCEEDED` with exactly 9/9 checks (so a STALE or INCOMPLETE pipeline never deploys). The gold job packages `site/` with `actions/upload-pages-artifact` only then, and only on `main`.
+- **Deploy:** the `deploy` job runs `actions/deploy-pages` only when bronze, silver and gold all succeeded in the same run on `main`. A single-layer run (`workflow_dispatch`, `layer=gold`) never deploys, even if it ends SUCCEEDED.
+- **The published site is public.** It holds aggregates only, plus `insights.html`, whose lookup example shows one synthetic employee's id, department and ratings (no names or emails).
 
 ### Gotchas met while building this
 - In Git Bash, `/lake-state` passed to `docker compose run` gets rewritten to `C:/Program Files/Git/lake-state`. `run_layer.sh` sets `MSYS_NO_PATHCONV=1`.

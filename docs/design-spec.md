@@ -61,7 +61,7 @@ Optional later: kind + Helm chart (Kubernetes Job), Spark engine, Cloudflare R2 
 ## 3. Tech stack
 Python 3.12, pandas, pyarrow (Parquet), Pydantic v2, boto3 (S3 API to MinIO, path-style, retries 5 standard),
 psycopg2 (COPY TO STDOUT), PostgreSQL 16, MinIO, Docker Compose, matplotlib (dashboard/notebook),
-Jupyter + nbconvert, pytest + pytest-cov, bash (+ shellcheck), GitHub Actions, GitHub/Cloudflare Pages.
+Jupyter + nbconvert, pytest + pytest-cov, bash (+ shellcheck), GitHub Actions, GitHub Pages.
 Optional: PySpark (parity-tested alternative Gold engine), kind + Helm.
 
 ---
