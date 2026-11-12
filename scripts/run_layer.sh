@@ -31,17 +31,9 @@ esac
 
 log() { printf '[run_layer %s] %s\n' "$layer" "$*"; }
 
-rand() {
-  if command -v openssl >/dev/null 2>&1; then openssl rand -hex 16
-  else python3 -c 'import secrets; print(secrets.token_hex(16))'
-  fi
-}
-
 if [ ! -f .env ]; then
   log "creating .env with random local secrets (git-ignored)"
-  umask 077
-  sed -e "s/^POSTGRES_PASS=.*/POSTGRES_PASS=$(rand)/" \
-      -e "s/^MINIO_ROOT_PASSWORD=.*/MINIO_ROOT_PASSWORD=$(rand)/" .env.example > .env
+  create_dotenv .env.example .env
 fi
 
 export LAKE_STATE_DIR="${LAKE_STATE_DIR:-./.lake-state}"

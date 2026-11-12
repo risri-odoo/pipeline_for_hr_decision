@@ -163,3 +163,91 @@ def test_checksum_ignores_dates_but_not_content(lake):
 def test_no_stale_comparison_by_run_id_left():
     source = (ROOT / "job.py").read_text(encoding="utf-8")
     assert not re.search(r'used\.get\("run_id"\) != ', source)
+
+
+# Bug 5 (first CI run): run_layer.sh / run_compose.sh set `umask 077` script-wide while writing .env,
+# so data/generated came out owner-only and the Postgres container could not read the CSVs.
+
+
+@pytest.mark.skipif(find_bash() is None, reason="needs bash")
+def test_create_dotenv_keeps_the_callers_umask(tmp_path):
+    helpers = (ROOT / "scripts" / "_env.sh").read_text(encoding="utf-8")
+    (tmp_path / "env.sh").write_text(helpers.replace("\r\n", "\n"), encoding="utf-8", newline="\n")
+    (tmp_path / ".env.example").write_text("POSTGRES_PASS=change-me\nMINIO_ROOT_PASSWORD=x\nLAKE_BUCKET=b\n", encoding="utf-8", newline="\n")
+    script = "umask 022; . ./env.sh; create_dotenv; echo \"umask=$(umask)\"; mkdir -p data/generated; stat -c %a .env data/generated 2>/dev/null || true"
+    out = subprocess.run([find_bash(), "-c", script], cwd=tmp_path, capture_output=True, text=True, check=True).stdout.split()
+    assert out[0] == "umask=0022"
+    env = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "change-me" not in env and re.search(r"^POSTGRES_PASS=[0-9a-f]{32}$", env, flags=re.M) and "LAKE_BUCKET=b" in env
+    if len(out) == 3 and not Path("C:/").exists():  # file modes are only meaningful on a POSIX filesystem
+        assert out[1:] == ["600", "755"]
+
+
+def test_run_scripts_never_set_a_script_wide_umask():
+    for name in ("run_layer.sh", "run_compose.sh", "run_tests.sh"):
+        assert "umask" not in (ROOT / "scripts" / name).read_text(encoding="utf-8"), name
+
+
+# Bug 6 (first CI run): gold ran after bronze failed, because a skipped silver was read as
+# "gold picked alone". The real `if:` expressions from the workflow are evaluated below.
+
+WORKFLOW = (ROOT / ".github" / "workflows" / "pipeline.yml").read_text(encoding="utf-8")
+
+
+def job_condition(job: str) -> str:
+    block = re.search(rf"^  {job}:\n(.*?)(?=^  \w+:\n|\Z)", WORKFLOW, flags=re.M | re.S).group(1)
+    m = re.search(r"^    if: >-\n((?:      .*\n)+)", block, flags=re.M) or re.search(r"^    if: (.*)$", block, flags=re.M)
+    return " ".join(m.group(1).split())
+
+
+def evaluate(expr: str, ctx: dict) -> bool:
+    py = expr.replace("!cancelled()", "True").replace("&&", " and ").replace("||", " or ")
+    py = re.sub(r"!(?!=)", " not ", py)
+    py = re.sub(r"needs\.(\w+)\.result", r"result['\1']", py)
+    py = py.replace("needs.gold.outputs.deployable", "deployable").replace("github.event_name", "event")
+    py = py.replace("inputs.layer", "layer").replace("github.ref", "ref")
+    return bool(eval(py, {}, ctx))  # noqa: S307 - expressions come from our own workflow file
+
+
+NEEDS = {"bronze": [], "silver": ["bronze"], "gold": ["silver"], "deploy": ["bronze", "silver", "gold"]}
+
+
+def simulate(event: str, layer, fails: tuple[str, ...] = (), ref: str = "refs/heads/main") -> dict:
+    result: dict[str, str] = {}
+    for job in ("bronze", "silver", "gold", "deploy"):
+        expr = job_condition(job)
+        ctx = {"result": result, "event": event, "layer": layer, "ref": ref, "deployable": "true"}
+        runs = evaluate(expr, ctx)
+        if "cancelled()" not in expr and "always()" not in expr:  # GitHub adds an implicit success()
+            runs = runs and all(result[n] == "success" for n in NEEDS[job])
+        result[job] = ("failure" if job in fails else "success") if runs else "skipped"
+    return result
+
+
+@pytest.mark.parametrize(
+    "event,layer,fails,expected",
+    [
+        ("push", None, (), ("success", "success", "success", "success")),
+        ("push", None, ("bronze",), ("failure", "skipped", "skipped", "skipped")),
+        ("push", None, ("silver",), ("success", "failure", "skipped", "skipped")),
+        ("push", None, ("gold",), ("success", "success", "failure", "skipped")),
+        ("workflow_dispatch", "all", ("bronze",), ("failure", "skipped", "skipped", "skipped")),
+        ("workflow_dispatch", "all", (), ("success", "success", "success", "success")),
+        ("workflow_dispatch", "bronze", (), ("success", "skipped", "skipped", "skipped")),
+        ("workflow_dispatch", "silver", (), ("skipped", "success", "skipped", "skipped")),
+        ("workflow_dispatch", "gold", (), ("skipped", "skipped", "success", "skipped")),
+    ],
+)
+def test_jobs_never_run_after_an_upstream_failure(event, layer, fails, expected):
+    got = simulate(event, layer, fails)
+    assert (got["bronze"], got["silver"], got["gold"], got["deploy"]) == expected
+
+
+def test_deploy_only_from_main():
+    assert simulate("workflow_dispatch", "all", ref="refs/heads/feature")["deploy"] == "skipped"
+
+
+def test_no_actions_left_on_node20_majors():
+    old = {"actions/checkout": 5, "actions/upload-artifact": 6, "actions/download-artifact": 7, "actions/deploy-pages": 5}
+    for action, major in re.findall(r"uses: ([\w/-]+)@v(\d+)", WORKFLOW):
+        assert int(major) >= old.get(action, 0), f"{action}@v{major}"

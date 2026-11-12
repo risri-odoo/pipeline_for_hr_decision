@@ -58,7 +58,8 @@ Measured locally (Docker Desktop on Windows): export about 20 s, import about 60
 
 ### Gotchas met while building this
 - In Git Bash, `/lake-state` passed to `docker compose run` gets rewritten to `C:/Program Files/Git/lake-state`. `run_layer.sh` sets `MSYS_NO_PATHCONV=1`.
-- `actions/upload-artifact@v4` skips hidden files and folders, so CI uses `./lake-state` (`LAKE_STATE_DIR`), not the local default `./.lake-state`.
+- A script-wide `umask 077` (used to keep `.env` private) made every directory created later owner-only, so the Postgres container (another uid) couldn't read `data/generated` on Linux CI. Docker Desktop on Windows hides file modes, so it only failed in CI. `create_dotenv` now sets the umask in a subshell. To reproduce CI locally, run the job commands as a non-root uid inside `docker:dind`.
+- `actions/upload-artifact` skips hidden files and folders, so CI uses `./lake-state` (`LAKE_STATE_DIR`), not the local default `./.lake-state`.
 - Containers write to bind mounts as `ETL_UID`/`SITE_UID` (default 10001). The shell scripts and CI set them to the host user so it can read and delete the files.
 
 ## Generated data

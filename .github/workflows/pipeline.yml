@@ -36,13 +36,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Let containers write as the runner user
         run: |
           { echo "ETL_UID=$(id -u)"; echo "ETL_GID=$(id -g)"; echo "SITE_UID=$(id -u)"; echo "SITE_GID=$(id -g)"; } >> "$GITHUB_ENV"
       - name: Bronze layer (generates the synthetic data, then extract + bronze)
         run: EXPORT_STATE=1 SKIP_SITE=1 scripts/run_layer.sh bronze
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: lake-after-bronze
           path: lake-state
@@ -51,13 +51,17 @@ jobs:
 
   silver:
     needs: bronze
+    # Runs after a successful bronze in a full run, or alone when layer=silver was picked.
+    # A failed bronze never lets silver run (a skipped bronze only counts when silver was picked alone).
     if: >-
-      !cancelled() && (needs.bronze.result == 'success' || needs.bronze.result == 'skipped') &&
-      (github.event_name != 'workflow_dispatch' || inputs.layer == 'all' || inputs.layer == 'silver')
+      !cancelled() && (
+        (needs.bronze.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.layer == 'all')) ||
+        (needs.bronze.result == 'skipped' && github.event_name == 'workflow_dispatch' && inputs.layer == 'silver')
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Let containers write as the runner user
         run: |
           { echo "ETL_UID=$(id -u)"; echo "ETL_GID=$(id -g)"; echo "SITE_UID=$(id -u)"; echo "SITE_GID=$(id -g)"; } >> "$GITHUB_ENV"
@@ -66,7 +70,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: scripts/ci_find_state.sh "${{ needs.bronze.result }}" lake-after-bronze
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ steps.state.outputs.name }}
           path: lake-state
@@ -74,7 +78,7 @@ jobs:
           github-token: ${{ github.token }}
       - name: Silver layer
         run: IMPORT_STATE=1 EXPORT_STATE=1 SKIP_SITE=1 scripts/run_layer.sh silver
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: lake-after-silver
           path: lake-state
@@ -85,13 +89,17 @@ jobs:
     needs: silver
     outputs:
       deployable: ${{ steps.gate.outputs.deployable }}
+    # Runs after a successful silver in a full run, or alone when layer=gold was picked.
+    # A failed bronze or silver never lets gold run (a skipped silver only counts when gold was picked alone).
     if: >-
-      !cancelled() && (needs.silver.result == 'success' || needs.silver.result == 'skipped') &&
-      (github.event_name != 'workflow_dispatch' || inputs.layer == 'all' || inputs.layer == 'gold')
+      !cancelled() && (
+        (needs.silver.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.layer == 'all')) ||
+        (needs.silver.result == 'skipped' && github.event_name == 'workflow_dispatch' && inputs.layer == 'gold')
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Let containers write as the runner user
         run: |
           { echo "ETL_UID=$(id -u)"; echo "ETL_GID=$(id -g)"; echo "SITE_UID=$(id -u)"; echo "SITE_GID=$(id -g)"; } >> "$GITHUB_ENV"
@@ -100,7 +108,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: scripts/ci_find_state.sh "${{ needs.silver.result }}" lake-after-silver
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ steps.state.outputs.name }}
           path: lake-state
@@ -112,13 +120,13 @@ jobs:
         id: gate
         if: always()
         run: python3 scripts/ci_gate.py site/lineage.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: lake-after-gold
           path: lake-state
           retention-days: ${{ env.STATE_RETENTION_DAYS }}
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: site

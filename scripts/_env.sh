@@ -25,6 +25,25 @@ export_test_connection() {
   export AWS_REGION="${AWS_REGION:-us-east-1}"
 }
 
+rand_hex() {
+  if command -v openssl >/dev/null 2>&1; then openssl rand -hex 16
+  else python3 -c 'import secrets; print(secrets.token_hex(16))'
+  fi
+}
+
+# Write .env from .env.example with random passwords, readable by the owner only.
+# The umask is set in a subshell: a script-wide `umask 077` would also make every directory
+# created later (e.g. data/generated) owner-only, and the Postgres container could not read it.
+create_dotenv() {
+  local example="${1:-.env.example}" out="${2:-.env}" pg minio
+  pg="$(rand_hex)" minio="$(rand_hex)"
+  (
+    umask 077
+    sed -e "s/^POSTGRES_PASS=.*/POSTGRES_PASS=${pg}/" \
+        -e "s/^MINIO_ROOT_PASSWORD=.*/MINIO_ROOT_PASSWORD=${minio}/" "$example" >"$out"
+  )
+}
+
 # Containers that write to bind mounts run as the host user, so it can read and delete the files.
 export_host_ids() {
   export ETL_UID="${ETL_UID:-$(id -u)}" ETL_GID="${ETL_GID:-$(id -g)}"
